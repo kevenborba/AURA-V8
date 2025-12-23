@@ -1,0 +1,7 @@
+discord.py
+aiosqlite
+python-dotenv
+psutil
+chat-exporter
+Pillow
+matplotlib
