@@ -7,4 +7,3 @@ Pillow
 matplotlib
 quart
 hypercorn
-#TESTE
