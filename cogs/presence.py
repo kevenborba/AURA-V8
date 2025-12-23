@@ -93,6 +93,10 @@ class Presence(commands.Cog):
     async def presence_loop(self):
         await self.bot.wait_until_ready()
         
+        # [V8] Check de Trava Global (ex: Bot Stream Ativo)
+        if getattr(self.bot, 'presence_locked', False):
+            return
+        
         # Pega config
         # Nota: Pegamos do primeiro guild que achar só pra ter base, ou usamos padrão
         try:

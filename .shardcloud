@@ -1,7 +1,7 @@
-DISPLAY_NAME=AURA V3
+DISPLAY_NAME=Bot de Teste
 MAIN=main.py
 MEMORY=512
 VERSION=recommended
 LANGUAGE=python
-SUBDOMAIN=obake
-APPID=14332bfb-b7f7-4795-86b3-99dfc4fd3564
+SUBDOMAIN=aurateste
+APPID=8ce2fd67-149b-44db-a9bd-1c5a14caff97

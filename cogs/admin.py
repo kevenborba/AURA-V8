@@ -226,5 +226,44 @@ class Admin(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Erro ao limpar: {e}", ephemeral=True)
 
+    # --- CONFIGURAÇÃO (SETUP) ---
+    @app_commands.command(name="setup_streaming", description="⚙️ Configura o módulo de Streaming")
+    @app_commands.describe(canal="Canal onde as lives serão divulgadas", cargo="Cargo a ser dado (Opcional)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_streaming(self, interaction: discord.Interaction, canal: discord.TextChannel, cargo: discord.Role = None):
+        role_id = cargo.id if cargo else None
+        
+        # Upsert na tabela config
+        # SQLite UPSERT syntax: INSERT INTO ... ON CONFLICT(guild_id) DO UPDATE SET ...
+        # Mas nossa tabela config pode não ter UNIQUE(guild_id) garantido em versões antigas? 
+        # Assumindo que tem PRIMARY KEY(guild_id) ou UNIQUE
+        
+        # Vamos checar se já existe registro
+        exists = await self.bot.db.execute("SELECT 1 FROM config WHERE guild_id = ?", (interaction.guild.id,))
+        row = await exists.fetchone()
+        
+        if row:
+            await self.bot.db.execute("UPDATE config SET streaming_channel_id = ?, streaming_role_id = ? WHERE guild_id = ?", (canal.id, role_id, interaction.guild.id))
+        else:
+             await self.bot.db.execute("INSERT INTO config (guild_id, streaming_channel_id, streaming_role_id) VALUES (?, ?, ?)", (interaction.guild.id, canal.id, role_id))
+             
+        await self.bot.db.commit()
+        await interaction.response.send_message(f"✅ **Streaming Configurado!**\n📺 Canal: {canal.mention}\n🎭 Cargo: {cargo.mention if cargo else 'Nenhum'}", ephemeral=True)
+
+    @app_commands.command(name="setup_tickets", description="⚙️ Configura o canal de Tickets (para Punições)")
+    @app_commands.describe(canal="Canal onde fica o painel de tickets")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_tickets(self, interaction: discord.Interaction, canal: discord.TextChannel):
+        exists = await self.bot.db.execute("SELECT 1 FROM config WHERE guild_id = ?", (interaction.guild.id,))
+        row = await exists.fetchone()
+        
+        if row:
+            await self.bot.db.execute("UPDATE config SET ticket_panel_channel_id = ? WHERE guild_id = ?", (canal.id, interaction.guild.id))
+        else:
+             await self.bot.db.execute("INSERT INTO config (guild_id, ticket_panel_channel_id) VALUES (?, ?)", (interaction.guild.id, canal.id))
+             
+        await self.bot.db.commit()
+        await interaction.response.send_message(f"✅ **Tickets Configurado!**\n🎫 Canal Vinculado: {canal.mention}", ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(Admin(bot))

@@ -4,6 +4,7 @@ from discord import app_commands, ui
 import json
 import aiohttp
 import asyncio
+from utils.license_manager import check_license
 
 class EmbedCreator(commands.Cog):
     def __init__(self, bot):
@@ -14,6 +15,7 @@ class EmbedCreator(commands.Cog):
 
     @app_commands.command(name="painel_embeds", description="Posta o painel de inicialização do Mensageiro.")
     @app_commands.checks.has_permissions(administrator=True)
+    @check_license()
     async def panel(self, interaction: discord.Interaction):
         embed = discord.Embed(title="🎨 Gerenciador de Mensagens", color=0x2b2d31)
         embed.description = "Utilize os botões abaixo para criar ou gerenciar seus anúncios.\n\n📝 **Criar Novo**: Abre o editor em branco.\n📂 **Meus Templates**: Carrega um modelo salvo.\n❓ **Ajuda**: Como usar o sistema."
@@ -25,6 +27,7 @@ class EmbedCreator(commands.Cog):
 
     @app_commands.command(name="mensageiro", description="Crie, edite e envie embeds profissionais com botões e webhooks.")
     @app_commands.checks.has_permissions(administrator=True)
+    @check_license()
     async def messager(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         # Estado Inicial Vazio
@@ -335,6 +338,7 @@ class SendOptionsView(ui.View):
     @ui.button(label="Enviar Normal", style=discord.ButtonStyle.primary)
     async def send_normal(self, i, b):
         if not hasattr(self, 'channel'): return await i.response.send_message("❌ Selecione um canal acima primeiro!", ephemeral=True)
+        await i.response.defer(ephemeral=True)
         await self.do_send(i, self.channel, mode="bot")
         
     @ui.button(label="Enviar como Webhook (Premium)", style=discord.ButtonStyle.success, emoji="🤖")
@@ -346,6 +350,14 @@ class SendOptionsView(ui.View):
         embed = self.parent.build_embed()
         view = None
         
+        # Resolve o canal para garantir que temos um objeto com método send
+        real_channel = self.parent.bot.get_channel(channel.id)
+        if not real_channel:
+            try:
+                real_channel = await self.parent.bot.fetch_channel(channel.id)
+            except:
+                return await interaction.followup.send("❌ Canal não encontrado ou sem permissão.", ephemeral=True)
+        
         # Constrói View de Botões Reais
         if self.parent.state["buttons"]:
             view = ui.View(timeout=None)
@@ -354,14 +366,22 @@ class SendOptionsView(ui.View):
         
         try:
             if mode == "bot":
-                await channel.send(embed=embed, view=view)
-                await interaction.followup.send(f"✅ Enviado em {channel.mention}!")
+                await real_channel.send(embed=embed, view=view)
+                await interaction.followup.send(f"✅ Enviado em {real_channel.mention}!")
             else:
                 # Webhook Mode
-                wh = await channel.create_webhook(name=wh_name or "Mensageiro")
-                await wh.send(embed=embed, view=view, username=wh_name, avatar_url=wh_avatar)
+                wh = await real_channel.create_webhook(name=wh_name or "Mensageiro")
+                kwargs = {
+                    "username": wh_name,
+                    "avatar_url": wh_avatar,
+                    "embed": embed
+                }
+                if view:
+                    kwargs["view"] = view
+                    
+                await wh.send(**kwargs)
                 await wh.delete() # Limpa o webhook depois
-                await interaction.followup.send(f"✅ Webhook enviado em {channel.mention}!")
+                await interaction.followup.send(f"✅ Webhook enviado em {real_channel.mention}!")
         except Exception as e:
             await interaction.followup.send(f"❌ Erro ao enviar: {e}", ephemeral=True)
 

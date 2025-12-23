@@ -57,9 +57,7 @@ class Hierarchy(commands.Cog):
     # ====================================================
     # 🔄 AUTO-UPDATE (00:00)
     # ====================================================
-    # Timezone pode variar dependendo do servidor, mas 00:00 UTC é um bom padrão.
-    # Se precisar de BRT (UTC-3), seria time=datetime.time(hour=3)
-    @tasks.loop(time=datetime.time(hour=3, minute=0)) # 03:00 UTC = 00:00 BRT (aprox)
+    @tasks.loop(time=datetime.time(hour=3, minute=0)) 
     async def daily_update(self):
         print("🔄 [HIERARCHY] Iniciando atualização diária...")
         async with self.bot.db.execute("SELECT message_id, channel_id, guild_id, group_name FROM hierarchy_messages") as cursor:
@@ -76,7 +74,6 @@ class Hierarchy(commands.Cog):
                 try:
                     message = await channel.fetch_message(msg_id)
                 except discord.NotFound:
-                    # Mensagem deletada, remove do DB
                     await self.bot.db.execute("DELETE FROM hierarchy_messages WHERE message_id = ?", (msg_id,))
                     await self.bot.db.commit()
                     continue
@@ -96,7 +93,6 @@ class Hierarchy(commands.Cog):
     # 🏗️ CONSTRUTOR DE EMBED
     # ====================================================
     async def _build_hierarchy_embed(self, guild, group_name="Principal"):
-        # Busca Config do Grupo
         async with self.bot.db.execute("SELECT role_id, label FROM hierarchy_roles WHERE guild_id = ? AND group_name = ? ORDER BY priority ASC", (guild.id, group_name)) as cursor:
             rows = await cursor.fetchall()
             
@@ -116,13 +112,10 @@ class Hierarchy(commands.Cog):
             members = role.members
             if not members: continue
             
-            # Ordena e formata
             members.sort(key=lambda m: m.display_name)
             
-            # Cabeçalho do Cargo
-            description += f"\n**{label}**\n" # Ex: **👑 LIDERANÇA**
+            description += f"\n**{label}**\n" 
             
-            # Lista de Membros (Estilo Árvore)
             for i, member in enumerate(members):
                 is_last = (i == len(members) - 1)
                 prefix = "╰" if is_last else "├"
@@ -152,10 +145,67 @@ class Hierarchy(commands.Cog):
         view = RefreshHierarchyView(self.bot, self)
         message = await interaction.followup.send(embed=embed, view=view)
         
-        # Salva para Auto-Update
         await self.bot.db.execute("INSERT OR REPLACE INTO hierarchy_messages (message_id, channel_id, guild_id, group_name) VALUES (?, ?, ?, ?)", 
                                   (message.id, interaction.channel.id, interaction.guild.id, grupo))
         await self.bot.db.commit()
+
+    @app_commands.command(name="hierarquia_txt", description="📜 Lista de hierarquia formatada para Copiar/Colar (Com Telefone).")
+    @app_commands.describe(grupo="Nome do grupo (Ex: Principal, Tatico). Deixe vazio para Principal.")
+    async def raw_hierarchy(self, interaction: discord.Interaction, grupo: str = "Principal"):
+        await interaction.response.defer()
+        
+        async with self.bot.db.execute("SELECT role_id, label FROM hierarchy_roles WHERE guild_id = ? AND group_name = ? ORDER BY priority ASC", (interaction.guild.id, grupo)) as cursor:
+            rows = await cursor.fetchall()
+            
+        if not rows:
+            return await interaction.followup.send(f"❌ Grupo '{grupo}' não encontrado ou vazio.", ephemeral=True)
+
+        final_text = f"**LISTA: {grupo.upper()}**\n\n"
+        
+        for role_id, label in rows:
+            role = interaction.guild.get_role(role_id)
+            if not role: continue
+            
+            members = role.members
+            if not members: continue
+            
+            members.sort(key=lambda m: m.display_name)
+            
+            final_text += f"__{label}__\n"
+            
+            for member in members:
+                d_id = member.id
+                passport = "?"
+                name = member.display_name
+                phone = "N/A"
+                
+                if "・" in member.display_name:
+                    parts = member.display_name.split("・", 1)
+                    passport = parts[0].strip()
+                    name = parts[1].strip()
+                elif " " in member.display_name and member.display_name[0].isdigit():
+                     parts = member.display_name.split(" ", 1)
+                     passport = parts[0].strip()
+                     name = parts[1].strip()
+
+                try:
+                    async with self.bot.db.execute("SELECT phone FROM set_users WHERE user_id = ?", (d_id,)) as cursor:
+                        row = await cursor.fetchone()
+                        if row and row[0]:
+                            phone = row[0]
+                except:
+                    pass
+                
+                final_text += f"{d_id} - {passport} - {name} - {phone}\n"
+            
+            final_text += "\n"
+        
+        if len(final_text) > 1900:
+            import io
+            f = io.BytesIO(final_text.encode('utf-8'))
+            await interaction.followup.send("📄 A lista é muito grande, veja o arquivo:", file=discord.File(f, "hierarquia.txt"))
+        else:
+            await interaction.followup.send(f"```\n{final_text}\n```")
 
     @app_commands.command(name="painel_hierarquia", description="⚙️ Configura a hierarquia (Grupos e Cargos).")
     @app_commands.checks.has_permissions(administrator=True)
@@ -168,22 +218,38 @@ class Hierarchy(commands.Cog):
         async with self.bot.db.execute("SELECT id, role_id, label, priority, group_name FROM hierarchy_roles WHERE guild_id = ? ORDER BY group_name, priority ASC", (interaction.guild.id,)) as cursor:
             rows = await cursor.fetchall()
             
-        embed = discord.Embed(title="⚙️ Configuração de Hierarquia", color=0x2b2d31)
+        # PREMIUM DESIGN LAYOUT (MODERNIZADO)
+        embed = discord.Embed(
+            title="CONFIGURAÇÃO DE HIERARQUIA", 
+            description="Gerencie os cargos e grupos que aparecem na lista oficial.", 
+            color=0x000000
+        )
+        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        embed.set_image(url=INVISIBLE_WIDE_URL)
+        embed.set_footer(text="Aura System • Editor de Hierarquia")
         
         if not rows:
-            embed.description = "*Nenhuma configuração encontrada.*"
+            embed.add_field(name="Estado Atual", value="*Nenhuma configuração encontrada.*", inline=False)
         else:
-            desc = ""
             current_group = None
+            group_text = ""
+            
             for r in rows:
                 if r[4] != current_group:
+                    if current_group and group_text:
+                        embed.add_field(name=f"📂 {current_group}", value=group_text, inline=False)
+                        group_text = ""
                     current_group = r[4]
-                    desc += f"\n📂 **{current_group}**\n"
                 
                 role = interaction.guild.get_role(r[1])
-                role_name = role.mention if role else f"ID: {r[1]}"
-                desc += f"`{r[3]}`. **{r[2]}** -> {role_name} (ID DB: {r[0]})\n"
-            embed.description = desc
+                role_name = role.mention if role else f"⚠ Deletado ({r[1]})"
+                
+                # Format: Label -> Role (ID: 10)
+                group_text += f"` {r[3]} ` **{r[2]}** ➔ {role_name} `[ID: {r[0]}]`\n"
+            
+            # Adiciona o último grupo
+            if current_group and group_text:
+                embed.add_field(name=f"📂 {current_group}", value=group_text, inline=False)
 
         view = HierarchyConfigView(self.bot, self)
         await interaction.followup.send(embed=embed, view=view)
@@ -193,11 +259,10 @@ class RefreshHierarchyView(ui.View):
         super().__init__(timeout=None)
         self.bot = bot; self.cog = cog
 
-    @ui.button(label="Atualizar", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="hier_refresh")
+    @ui.button(label="Atualizar Lista", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="hier_refresh")
     async def refresh(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
         
-        # Busca qual grupo é essa mensagem
         async with self.bot.db.execute("SELECT group_name FROM hierarchy_messages WHERE message_id = ?", (interaction.message.id,)) as cursor:
             row = await cursor.fetchone()
             
@@ -213,20 +278,52 @@ class HierarchyConfigView(ui.View):
     def __init__(self, bot, cog):
         super().__init__(timeout=None)
         self.bot = bot; self.cog = cog
+        
+        # Menu Dropdown para Ações
+        self.add_item(HierarchyActionSelect(bot, cog))
 
-    @ui.button(label="Adicionar Cargo", style=discord.ButtonStyle.green, emoji="➕", custom_id="hier_btn_add")
-    async def add_role(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(AddRoleModal(self.bot, self.cog, interaction))
+class HierarchyActionSelect(ui.Select):
+    def __init__(self, bot, cog):
+        self.bot = bot
+        self.cog = cog
+        
+        options = [
+            discord.SelectOption(
+                label="Adicionar Nova Posição", 
+                description="Vincula um cargo do Discord à hierarquia.", 
+                emoji="➕", 
+                value="add"
+            ),
+            discord.SelectOption(
+                label="Remover Posição", 
+                description="Remove um item da lista pelo ID.", 
+                emoji="🗑️", 
+                value="remove"
+            )
+        ]
+        
+        super().__init__(
+            placeholder="Selecione uma ação...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+            custom_id="hier_action_select"
+        )
 
-    @ui.button(label="Remover Item (ID)", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="hier_btn_remove")
-    async def remove_item(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(RemoveRoleModal(self.bot, self.cog, interaction))
+    async def callback(self, interaction: discord.Interaction):
+        value = self.values[0]
+        
+        if value == "add":
+            await interaction.response.send_modal(AddRoleModal(self.bot, self.cog, interaction))
+        elif value == "remove":
+            await interaction.response.send_modal(RemoveRoleModal(self.bot, self.cog, interaction))
 
 class AddRoleModal(ui.Modal, title="Adicionar Cargo"):
-    group_name = ui.TextInput(label="Nome do Grupo", default="Principal", placeholder="Ex: Principal, Tatico...")
-    role_id = ui.TextInput(label="ID do Cargo", placeholder="Ative o modo dev para pegar ID")
-    label = ui.TextInput(label="Título na Lista", placeholder="Ex: Líderes")
-    priority = ui.TextInput(label="Prioridade (1 = Topo)", placeholder="Número")
+    group_name = ui.TextInput(label="Nome do Grupo", default="Principal", placeholder="Ex: Principal, Tatico...", max_length=50)
+    role_id = ui.TextInput(label="ID do Cargo (Discord)", placeholder="Ative o modo dev e copie o ID do cargo", max_length=20)
+    label = ui.TextInput(label="Título na Lista", placeholder="Ex: 👑 Diretor / 👮 Soldado", max_length=50)
+    priority = ui.TextInput(label="Prioridade (Ordem)", placeholder="1 = Topo da lista, 99 = Base", max_length=3)
 
     def __init__(self, bot, cog, origin):
         super().__init__()
@@ -236,17 +333,22 @@ class AddRoleModal(ui.Modal, title="Adicionar Cargo"):
         try:
             rid = int(self.role_id.value)
             prio = int(self.priority.value)
-        except: return await interaction.response.send_message("❌ ID e Prioridade devem ser números.", ephemeral=True)
+        except: return await interaction.response.send_message("❌ ID do Cargo e Prioridade devem ser apenas números.", ephemeral=True)
+        
+        role = interaction.guild.get_role(rid)
+        if not role:
+             return await interaction.response.send_message("❌ Cargo não encontrado neste servidor.", ephemeral=True)
         
         await self.bot.db.execute("INSERT INTO hierarchy_roles (guild_id, role_id, label, priority, group_name) VALUES (?, ?, ?, ?, ?)", 
                                   (interaction.guild.id, rid, self.label.value, prio, self.group_name.value))
         await self.bot.db.commit()
-        await interaction.response.send_message("✅ Adicionado!", ephemeral=True)
+        
+        await interaction.response.send_message(f"✅ Adicionado: **{self.label.value}** (Prio: {prio}) no grupo **{self.group_name.value}**!", ephemeral=True)
         try: await self.cog.send_panel(self.origin)
         except: pass
 
 class RemoveRoleModal(ui.Modal, title="Remover Item"):
-    db_id = ui.TextInput(label="ID do Banco (Veja no Painel)", placeholder="Número ao lado do cargo")
+    db_id = ui.TextInput(label="ID do Banco (Veja no Painel)", placeholder="Número entre [ ] ex: 5", max_length=5)
 
     def __init__(self, bot, cog, origin):
         super().__init__()
@@ -258,7 +360,7 @@ class RemoveRoleModal(ui.Modal, title="Remover Item"):
         
         await self.bot.db.execute("DELETE FROM hierarchy_roles WHERE id = ? AND guild_id = ?", (did, interaction.guild.id))
         await self.bot.db.commit()
-        await interaction.response.send_message("✅ Removido!", ephemeral=True)
+        await interaction.response.send_message(f"✅ Item ID **{did}** removido com sucesso!", ephemeral=True)
         try: await self.cog.send_panel(self.origin)
         except: pass
 

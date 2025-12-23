@@ -92,6 +92,19 @@ async def create_db():
             )
         """)
         
+        # Tabela de Streams Ativas (Fase 11)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS active_streams (
+                message_id INTEGER PRIMARY KEY,
+                channel_id INTEGER,
+                guild_id INTEGER,
+                user_id INTEGER,
+                start_time TEXT,
+                platform TEXT DEFAULT 'twitch',
+                stream_url TEXT
+            )
+        """)
+        
         # Tabela de Templates de Embed
         await db.execute("""
             CREATE TABLE IF NOT EXISTS embed_templates (
@@ -101,6 +114,159 @@ async def create_db():
                 PRIMARY KEY (name, guild_id)
             )
         """)
+
+        # ====================================================
+        # NOVO: Tabelas do Painel do Dono & Advanced Features
+        # ====================================================
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS licenses (
+                key TEXT PRIMARY KEY,
+                guild_id INTEGER,
+                client_name TEXT,
+                expiration_date TEXT,
+                status TEXT DEFAULT 'active',
+                max_users INTEGER DEFAULT 0,
+                tier TEXT DEFAULT 'start'
+            )
+        """)
+
+        # ====================================================
+        # FASE 12: Organization Management (Punishments & Timesheet)
+        # ====================================================
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS org_punishments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                user_id INTEGER,
+                staff_id INTEGER,
+                type TEXT, -- 'warn', 'feedback', 'ban'
+                reason TEXT, -- Hidden from user (Staff Only)
+                conclusion TEXT, -- Staff notes
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS time_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                user_id INTEGER,
+                start_time TEXT,
+                end_time TEXT,
+                total_seconds INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'OPEN' -- OPEN, PAUSED, CLOSED
+            )
+        """)
+        
+        # Tabela para Pausas (Para descontar do total)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS time_pauses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                start_time TEXT,
+                end_time TEXT,
+                FOREIGN KEY(session_id) REFERENCES time_sessions(id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS timesheet_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                user_id INTEGER,
+                action TEXT,
+                timestamp TEXT,
+                session_id INTEGER,
+                details TEXT
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                action TEXT,
+                target TEXT,
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS global_bans (
+                user_id INTEGER PRIMARY KEY,
+                reason TEXT,
+                proof_url TEXT,
+                added_by INTEGER,
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # ====================================================
+        # FASE 13: Dynamic Tier Management
+        # ====================================================
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tier_definitions (
+                tier_name TEXT,
+                module_name TEXT,
+                PRIMARY KEY (tier_name, module_name)
+            )
+        """)
+        
+        # ====================================================
+        # ATUALIZAÇÃO FORÇADA DE TIERS (Garanti que está sempre sync c/ código)
+        # ====================================================
+        print("🌱 [DATABASE] Seeding / Updating Default Tiers...")
+
+            
+        # Mapeamento oficial solicitado
+        # 'Sorteio' -> 'giveaway_system'
+        # 'Factionactions' -> 'faction_actions'
+        # 'Timessheet' -> 'timesheet'
+        defaults = {
+            'start': [
+                'admin', 'embed_creator', 'general', 'logs', 'tickets', 'webserver', 'welcome'
+            ],
+            'faction': [
+                'admin', 'embed_creator', 'faction_actions', 'general', 'hierarchy', 'logs', 
+                'punishments', 'sales', 'setagem', 'sorteio', 'streaming', 'suggestions', 
+                'tickets', 'timesheet', 'webserver', 'welcome'
+            ],
+            'police': [
+                'admin', 'embed_creator', 'faction_actions', 'general', 'hierarchy', 'logs', 
+                'punishments', 'setagem', 'sorteio', 'staff_stats', 'streaming', 
+                'suggestions', 'tickets', 'webserver', 'welcome'
+            ],
+            'v8': [
+                'admin', 'bugs', 'embed_creator', 'faction_actions', 'general', 'hierarchy', 
+                'logs', 'punishments', 'setagem', 'sorteio', 'staff_stats', 
+                'streaming', 'suggestions', 'tickets', 'verification', 'webserver', 'welcome'
+            ]
+        }
+        
+        # Limpa definições antigas desses tiers para garantir que fique igual ao solicitado
+        await db.execute("DELETE FROM tier_definitions WHERE tier_name IN ('start', 'faction', 'police', 'v8')")
+        
+        for tier, modules in defaults.items():
+            for module in modules:
+                await db.execute("INSERT INTO tier_definitions (tier_name, module_name) VALUES (?, ?)", (tier, module))
+        
+        # Migração Automática para Colunas Novas (Timesheet V2)
+        async with db.execute("PRAGMA table_info(config)") as cursor:
+            cols = [row[1] for row in await cursor.fetchall()]
+
+        new_cols = {
+            'ts_channel_operator': 'INTEGER',
+            'ts_channel_management': 'INTEGER',
+            'ts_channel_history': 'INTEGER',
+            'ts_role_id': 'INTEGER'
+        }
+
+        for col_name, col_type in new_cols.items():
+            if col_name not in cols:
+                print(f"⚠️ Migrando DB: Adicionando coluna '{col_name}' em config...")
+                await db.execute(f"ALTER TABLE config ADD COLUMN {col_name} {col_type}")
+            
+        await db.commit()
 
         # ====================================================
         # 2. MIGRAÇÃO SEGURA
@@ -135,7 +301,17 @@ async def create_db():
             ("sales_btn_emoji", "TEXT DEFAULT '💰'"),
             ("sales_log_channel_id", "INTEGER"),
             ("sales_emoji_normal", "TEXT DEFAULT '💵'"),
-            ("sales_emoji_partnership", "TEXT DEFAULT '🤝'")
+            ("sales_emoji_partnership", "TEXT DEFAULT '🤝'"),
+            ("streaming_role_id", "INTEGER"),
+            ("ticket_panel_channel_id", "INTEGER"),
+            ("alignment_channel_id", "INTEGER"),
+            ("timesheet_channel_id", "INTEGER"),
+            ("timesheet_message_id", "INTEGER"),
+            ("punish_title", "TEXT DEFAULT '⚠️ Notificação Administrativa'"),
+            ("punish_desc", "TEXT DEFAULT 'Você recebeu um apontamento administrativo.'"),
+            ("punish_emoji_warn", "TEXT DEFAULT '🟧'"),
+            ("punish_emoji_feedback", "TEXT DEFAULT '🟨'"),
+            ("punish_emoji_ban", "TEXT DEFAULT '🟥'")
         ]
         
         async with db.execute("PRAGMA table_info(config)") as cursor:
@@ -147,6 +323,62 @@ async def create_db():
                     print(f"🔄 [DATABASE] Adicionando coluna: {c}")
                     await db.execute(f"ALTER TABLE config ADD COLUMN {c} {t}")
                 except: pass
+                
+        # ====================================================
+        # MIGRAÇÕES (ALTER TABLE para bancos já existentes)
+        # ====================================================
+        try:
+            # Verifica colunas da tabela licenses
+            async with db.execute("PRAGMA table_info(licenses)") as cursor:
+                columns = [row[1] for row in await cursor.fetchall()]
+
+            if 'tier' not in columns:
+                print("⚠️ [MIGRATION] Adicionando coluna 'tier' à tabela licenses...")
+                await db.execute("ALTER TABLE licenses ADD COLUMN tier TEXT DEFAULT 'start'")
+                print("✅ [MIGRATION] Coluna 'tier' adicionada com sucesso.")
+            
+            if 'max_users' not in columns:
+                print("⚠️ [MIGRATION] Adicionando coluna 'max_users' à tabela licenses...")
+                await db.execute("ALTER TABLE licenses ADD COLUMN max_users INTEGER DEFAULT 0")
+
+        except Exception as e:
+            print(f"❌ [MIGRATION ERROR] Falha ao verificar/migrar tabela licenses: {e}")
+            
+        # ====================================================
+        # MIGRAÇÃO FORÇADA DE PUNIÇÕES (FIX)
+        # ====================================================
+        try:
+            async with db.execute("PRAGMA table_info(config)") as cursor:
+                cols_check = [row[1] for row in await cursor.fetchall()]
+
+            if "punish_title" not in cols_check:
+                print("⚠️ [FIX] Forçando criação de colunas de Punição...")
+                try: await db.execute("ALTER TABLE config ADD COLUMN punish_title TEXT DEFAULT '⚠️ Notificação Administrativa'")
+                except: pass
+                try: await db.execute("ALTER TABLE config ADD COLUMN punish_desc TEXT DEFAULT 'Você recebeu um apontamento administrativo.'") 
+                except: pass
+                try: await db.execute("ALTER TABLE config ADD COLUMN punish_emoji_warn TEXT DEFAULT '🟧'")
+                except: pass
+                try: await db.execute("ALTER TABLE config ADD COLUMN punish_emoji_feedback TEXT DEFAULT '🟨'")
+                except: pass
+                try: await db.execute("ALTER TABLE config ADD COLUMN punish_emoji_ban TEXT DEFAULT '🟥'")
+                except: pass
+            
+            if "punish_color" not in cols_check:
+                print("⚠️ [FIX] Adicionando coluna punish_color...")
+                try: await db.execute("ALTER TABLE config ADD COLUMN punish_color INTEGER DEFAULT 16766720")
+                except: pass
+
+            if "punish_channel_id" not in cols_check:
+                print("⚠️ [FIX] Adicionando coluna punish_channel_id...")
+                try: await db.execute("ALTER TABLE config ADD COLUMN punish_channel_id INTEGER")
+                except: pass
+
+        except Exception as e:
+            print(f"❌ [FIX ERROR] Erro na migração de punições: {e}")
+            
+        await db.commit()
+        print("✅ [DATABASE] Banco de dados verificado e atualizado.")
                 
         # Migração para faction_actions (MVP)
         async with db.execute("PRAGMA table_info(faction_actions)") as cursor:

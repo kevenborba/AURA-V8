@@ -5,3 +5,5 @@ psutil
 chat-exporter
 Pillow
 matplotlib
+quart
+hypercorn
